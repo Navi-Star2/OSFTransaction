@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>OSF.Transaction </title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    .spinner { width: 18px; height: 18px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .suggestion-item:hover { background: #f3f4f6; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <div id="app" class="max-w-xl mx-auto p-4">
+    <div class="flex items-center justify-center min-h-[80vh]"><div class="spinner mr-3"></div> Chargement de l'application...</div>
+  </div>
+
+  <script>
+    (() => {
+        const appDiv = document.getElementById('app');
+
+        // Vérification de sécurité pour la bibliothèque principale
+        if (typeof supabase === 'undefined') {
+            const errorMessage = `
+            <div class="mt-10 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
+                <strong class="font-bold">Erreur de chargement !</strong>
+                <span class="block sm:inline">La bibliothèque Supabase n'a pas pu être chargée. Vérifiez votre connexion Internet.</span>
+            </div>`;
+            appDiv.innerHTML = errorMessage;
+            return;
+        }
+
+      const { createClient } = supabase;
+      const supabaseUrl = 'https://kjhapsgqqjhzlmpumljo.supabase.co';
+      const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtqaGFwc2dxcWpoemxtcHVtbGpvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUxODMxODUsImV4cCI6MjA3MDc1OTE4NX0.QLolJIItbXZjxYNtDjPnZIZTOxdSvA8YKvh82BAN5TM';
+      const sb = createClient(supabaseUrl, supabaseAnonKey);
+
+      const STATE = {
+        session: null, user: null, isAdmin: false, profile: null,
+        transfers: [], allProfiles: [], loading: true, isLoginMode: true,
+        email: '', password: '', registerPseudo: '', authLoading: false, showPassword: false,
+        newPseudo: '', amount: '100.00', recipientPseudo: '', description: '', recipientSuggestions: [],
+        recipientModalVisible: false, recipientModalSearch: '',
+        pinInput: '', pinError: '', pinModalVisible: false, isPinChecking: false,
+        changePinModalVisible: false, oldPinInput: '', newPinInput: '', confirmNewPinInput: '',
+        changePinError: '', isPinChanging: false, showTransferDetailsModal: false, selectedTransfer: null,
+        ADMIN_EMAIL: 'o.s.f.team528@gmail.com', adminMessage: '', adminSearchPseudo: '',
+        adminSelectedProfile: null, adminNewPseudo: '', adminModifyBalance: '0.00',
+        isProcessingAdminAction: false, message: null, authError: '', isTransferring: false, isPseudoUpdating: false,
+      };
+
+      const formatSnoard = (value) => `${Number(value ?? 0).toFixed(2)} Snoard`;
+      const app = document.getElementById('app');
+
+      function setMessage(msg, isError = false, duration = 4000) {
+        STATE.message = { text: msg, isError };
+        render();
+        if (msg && duration) {
+          setTimeout(() => {
+            if (STATE.message && STATE.message.text === msg) {
+              STATE.message = null;
+              render();
+            }
+          }, duration);
+        }
+      }
+      function setAuthError(msg) { STATE.authError = msg || ''; render(); }
+      function setAdminMessage(msg) { STATE.adminMessage = msg || ''; render(); } // Ajout pour la cohérence
+
+      function render() {
+        const activeElement = document.activeElement;
+        const activeElementId = activeElement ? activeElement.id : null;
+        const selectionStart = activeElement ? activeElement.selectionStart : null;
+        const selectionEnd = activeElement ? activeElement.selectionEnd : null;
+
+        if (STATE.loading) {
+          app.innerHTML = `<div class="flex items-center justify-center min-h-[60vh]"><span class="spinner mr-3"></span> Chargement...</div>`;
+          return;
+        }
+        app.innerHTML = STATE.session ? renderDashboard() : renderAuth();
+
+        if (activeElementId) {
+          const newActiveElement = document.getElementById(activeElementId);
+          if (newActiveElement) {
+            newActiveElement.focus();
+            if (typeof newActiveElement.setSelectionRange === 'function') {
+              newActiveElement.setSelectionRange(selectionStart, selectionEnd);
+            }
+          }
+        }
+      }
+
+      function renderAuth() {
+        return `
+          <div class="bg-white p-6 rounded-2xl shadow-xl mt-10">
+            <h1 class="text-3xl font-bold text-center mb-6">OSF.Transaction</h1>
+            <div class="p-4 border rounded-xl bg-gray-50">
+              <h2 class="text-xl font-semibold text-center mb-4">${STATE.isLoginMode ? 'Connexion' : 'Créer un compte'}</h2>
+              ${STATE.authError ? `<p class="text-red-500 text-center mb-4">${STATE.authError}</p>` : ''}
+              ${STATE.message ? `<p class="text-blue-600 text-center mb-4">${STATE.message.text}</p>` : ''}
+              <input type="email" id="email" placeholder="E-mail" value="${STATE.email}" class="shadow-sm border rounded-lg w-full py-3 px-4 mb-3" />
+              <div class="relative mb-4">
+                <input id="password" type="${STATE.showPassword ? 'text' : 'password'}" placeholder="Mot de passe" value="${STATE.password}" class="shadow-sm border rounded-lg w-full py-3 px-4" />
+                <button id="toggle-pass" type="button" class="absolute inset-y-0 right-0 pr-3 flex items-center">👁️</button>
+              </div>
+              ${!STATE.isLoginMode ? `<input type="text" id="registerPseudo" placeholder="Pseudo" value="${STATE.registerPseudo}" class="shadow-sm border rounded-lg w-full py-3 px-4 mb-3" />` : ''}
+              <button id="auth-submit" class="w-full bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-600 flex items-center justify-center">
+                ${STATE.authLoading ? '<span class="spinner"></span>' : (STATE.isLoginMode ? 'Se connecter' : "S'inscrire")}
+              </button>
+              <button id="toggle-mode" class="w-full mt-4 text-sm text-indigo-600">${STATE.isLoginMode ? 'Pas de compte ?' : 'Déjà un compte ?'}</button>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderDashboard() {
+        const p = STATE.profile;
+        const isAdmin = STATE.isAdmin;
+        const suggestionsList = STATE.recipientSuggestions.map(s => `<li data-pseudo="${s.pseudo}" class="px-4 py-2 cursor-pointer suggestion-item">${s.pseudo}</li>`).join('');
+        const transfersList = (STATE.transfers || []).map(t => {
+          const isDebit = t.sender_id === STATE.user?.id;
+          const transferAmount = isDebit ? -t.amount : t.amount;
+          const counterpart = isDebit ? (t.recipient?.pseudo || 'Inconnu') : (t.sender?.pseudo || 'Inconnu');
+          return `
+            <li data-transfer-id="${t.id}" class="p-4 bg-gray-50 rounded-lg border cursor-pointer hover:bg-gray-100 transition-colors duration-200">
+              <div class="flex justify-between items-center">
+                <div>
+                  <p class="text-lg font-semibold ${isDebit ? 'text-red-600' : 'text-green-600'}">${formatSnoard(transferAmount)}</p>
+                  <p class="text-sm">${isDebit ? `À : ${counterpart}` : `De : ${counterpart}`}</p>
+                  <p class="text-sm text-gray-500">${new Date(t.created_at).toLocaleString('fr-FR')}</p>
+                  <p class="text-xs italic truncate">${t.description || ''}</p>
+                </div>
+                ${isDebit ? `<button data-delete-id="${t.id}" class="text-gray-400 hover:text-red-600 p-2 rounded-full"><svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 11-2 0v6a1 1 0 112 0V8z" clip-rule="evenodd"></path></svg></button>` : ''}
+              </div>
+            </li>`;
+        }).join('');
+        const filteredAdminProfiles = (STATE.allProfiles || []).filter(pf => pf.pseudo.toLowerCase().includes((STATE.adminSearchPseudo || '').toLowerCase()));
+        const adminList = filteredAdminProfiles.map(pf => `<div data-id="${pf.id}" class="p-3 rounded-lg mb-2 cursor-pointer ${STATE.adminSelectedProfile?.id === pf.id ? 'bg-red-200' : 'bg-white hover:bg-gray-100'}"><p class="font-semibold">${pf.pseudo}</p><p class="text-sm text-gray-600">${isAdmin && pf.balance !== undefined ? formatSnoard(pf.balance) : ''}</p></div>`).join('');
+        const recipientModalList = (STATE.allProfiles || [])
+          .filter(pf => pf.pseudo.toLowerCase().includes(STATE.recipientModalSearch.toLowerCase()) && pf.id !== STATE.user?.id) 
+          .map(pf => `<li data-select-pseudo="${pf.pseudo}" class="p-3 rounded-lg cursor-pointer hover:bg-gray-100">${pf.pseudo}</li>`)
+          .join('') || '<li class="text-center text-gray-500">Aucun utilisateur trouvé.</li>';
+
+        return `
+          <div class="flex flex-col space-y-6">
+            <div class="bg-white p-6 rounded-2xl shadow-xl">
+              <h1 class="text-3xl font-bold text-center mb-4">OSF.Transaction</h1>
+              ${STATE.message ? `<p class="text-center mb-4 font-semibold ${STATE.message.isError ? 'text-red-600' : 'text-blue-600'}">${STATE.message.text}</p>` : ''}
+              <div class="text-sm text-gray-600 text-center mb-4 p-2 bg-gray-50 rounded-lg flex justify-between items-center"><p>Connecté : <span class="font-semibold">${p?.pseudo || ''}${isAdmin ? '<span class="ml-2 text-xs bg-red-500 text-white px-2 py-1 rounded">Admin</span>' : ''}</span></p><button id="signout" class="text-red-500 hover:text-red-700">Déconnexion</button></div>
+              <div class="text-center mb-6 p-4 bg-indigo-100 rounded-lg"><p class="font-semibold text-indigo-800">Solde :</p><p class="text-3xl font-extrabold text-indigo-600">${formatSnoard(p?.balance)}</p></div>
+              <div class="mb-6 p-4 border rounded-lg bg-gray-50"><h3 class="text-lg font-semibold mb-2">Modifier pseudo</h3><div class="flex gap-2"><input id="newPseudo" type="text" value="${STATE.newPseudo}" class="flex-grow shadow-sm border rounded-lg p-2" /><button id="update-pseudo" class="bg-indigo-500 text-white font-bold py-2 px-4 rounded-lg">${STATE.isPseudoUpdating ? '<span class="spinner"></span>' : 'OK'}</button></div></div>
+              <div class="space-y-4">
+                <input id="amount" type="number" placeholder="Montant" value="${STATE.amount}" class="w-full shadow-sm border rounded-lg p-3" />
+                <div class="relative">
+                  <input id="recipientPseudo" type="text" placeholder="Bénéficiaire" value="${STATE.recipientPseudo}" class="w-full shadow-sm border rounded-lg p-3 pr-12" />
+                  <button id="openRecipientModal" class="absolute inset-y-0 right-0 px-3 text-gray-500 hover:text-indigo-600 flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197m0 0A5.995 5.995 0 0012 12a5.995 5.995 0 00-3-5.197M15 21a6 6 0 00-9-5.197" /></svg>
+                  </button>
+                  ${STATE.recipientSuggestions.length > 0 ? `<ul id="suggestions" class="absolute z-10 w-full bg-white border rounded-lg shadow-lg mt-1">${suggestionsList}</ul>` : ''}
+                </div>
+                <textarea id="description" placeholder="Description (obligatoire)" class="w-full shadow-sm border rounded-lg p-3">${STATE.description}</textarea>
+                <button id="do-transfer" class="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center">${STATE.isTransferring ? '<span class="spinner"></span>' : 'Virement'}</button>
+                <button id="change-pin-button" class="w-full bg-gray-400 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-500">Modifier PIN</button>
+              </div>
+            </div>
+            <div class="bg-white p-6 rounded-2xl shadow-xl"><h2 class="text-2xl font-bold text-center mb-4">Historique</h2><ul id="transfer-history" class="space-y-4">${transfersList || '<li class="text-center text-gray-500">Aucun virement.</li>'}</ul></div>
+            <div id="pinModal" class="${STATE.pinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Entrez votre PIN</h2><input type="password" id="pinInput" value="${STATE.pinInput}" class="w-full p-2 border rounded mb-4" placeholder="PIN"><p id="pinError" class="text-red-500 mb-4 h-6">${STATE.pinError}</p><div class="flex justify-between"><button id="pinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="pinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChecking ? '<span class="spinner"></span>' : 'Valider'}</button></div></div></div>
+            <div id="changePinModal" class="${STATE.changePinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Modifier PIN</h2><input type="password" id="oldPinInput" value="${STATE.oldPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Mot de passe actuel (pour sécurité)"><input type="password" id="newPinInput" value="${STATE.newPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Nouveau PIN (4-6 chiffres)"><input type="password" id="confirmNewPinInput" value="${STATE.confirmNewPinInput}" class="w-full p-2 border rounded mb-4" placeholder="Confirmer nouveau PIN"><p id="changePinError" class="text-red-500 mb-4 h-6">${STATE.changePinError}</p><div class="flex justify-between"><button id="changePinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="changePinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChanging ? '<span class="spinner"></span>' : 'Confirmer'}</button></div></div></div>
+            <div id="transferDetailsModal" class="${STATE.showTransferDetailsModal ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-96"><div class="flex justify-between items-center mb-4"><h2 class="text-lg font-bold">Détails du Virement</h2><button id="closeTransferDetails" class="text-gray-500 hover:text-gray-700 text-2xl font-bold">&times;</button></div>${STATE.selectedTransfer ? `<div class="space-y-3 text-sm"><p><strong>De:</strong> ${STATE.selectedTransfer.sender?.pseudo || 'Moi'}</p><p><strong>À:</strong> ${STATE.selectedTransfer.recipient?.pseudo || 'Moi'}</p><p><strong>Montant:</strong> ${formatSnoard(STATE.selectedTransfer.amount)}</p><p><strong>Date:</strong> ${new Date(STATE.selectedTransfer.created_at).toLocaleString('fr-FR')}</p><p><strong>Description:</strong></p><p class="bg-gray-100 p-2 rounded-lg text-gray-700 whitespace-pre-wrap">${STATE.selectedTransfer.description || 'Pas de description.'}</p></div>` : ''}</div></div>
+            <div id="recipientModal" class="${STATE.recipientModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"><div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-md max-h-[80vh] flex flex-col"><div class="flex justify-between items-center mb-4"><h2 class="text-lg font-bold">Choisir un bénéficiaire</h2><button id="closeRecipientModal" class="text-gray-500 hover:text-gray-700 text-2xl font-bold">&times;</button></div><input type="text" id="recipientModalSearch" value="${STATE.recipientModalSearch}" class="w-full p-2 border rounded mb-4" placeholder="Rechercher un pseudo..."><ul id="recipient-list" class="overflow-y-auto space-y-2">${recipientModalList}</ul></div></div>
+            ${isAdmin ? `<div class="bg-white p-6 rounded-2xl shadow-xl border-4 border-dashed border-red-500 mt-6"><h2 class="text-2xl font-bold text-center text-red-700 mb-4">Admin</h2>${STATE.adminMessage ? `<p class="text-center mb-4 font-semibold text-blue-600">${STATE.adminMessage}</p>` : ''}<input id="adminSearchPseudo" type="text" placeholder="Rechercher..." value="${STATE.adminSearchPseudo}" class="w-full shadow-sm border rounded-lg p-3 mb-4" /><div id="admin-list" class="bg-gray-50 rounded-xl p-4 max-h-60 overflow-y-auto shadow-inner mb-4">${adminList || '<p class="text-sm text-gray-500">Aucun profil.</p>'}</div>${STATE.adminSelectedProfile ? `<div class="mt-4 p-4 bg-red-50 rounded-lg border border-red-200 space-y-4"><h3 class="font-bold text-lg">Actions pour ${STATE.adminSelectedProfile.pseudo}</h3><div><label class="block text-sm">Modifier pseudo</label><div class="flex gap-2 mt-1"><input id="adminNewPseudo" type="text" value="${STATE.adminNewPseudo}" class="flex-grow shadow-sm border rounded-lg p-2" /><button id="admin-update-pseudo" class="bg-red-500 text-white font-bold p-2 rounded-lg">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'OK'}</button></div></div><div><label class="block text-sm">Ajuster solde (+/-)</label><div class="flex gap-2 mt-1"><input id="adminModifyBalance" type="number" value="${STATE.adminModifyBalance}" class="flex-grow shadow-sm border rounded-lg p-2" /><button id="admin-update-balance" class="bg-red-500 text-white font-bold p-2 rounded-lg">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'OK'}</button></div></div><button id="admin-delete-user" class="w-full bg-red-700 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-800">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'Supprimer'}</button></div>` : ''}</div>` : ''}
+          </div>
+        `;
+      }
+      
+      function bindEvents() {
+        app.addEventListener('click', (e) => {
+          const target = e.target;
+          const button = target.closest('button');
+          const id = button ? button.id : target.id;
+          
+          const transferId = target.closest('li[data-transfer-id]')?.dataset.transferId;
+          const deleteId = target.closest('button[data-delete-id]')?.dataset.deleteId;
+          const pseudoData = target.closest('li[data-pseudo]')?.dataset.pseudo;
+          const selectedPseudo = target.closest('li[data-select-pseudo]')?.dataset.selectPseudo;
+          const adminProfileId = target.closest('div[data-id]')?.dataset.id;
+          
+          if (target.id === 'transferDetailsModal' || target.id === 'recipientModal' || id === 'closeTransferDetails' || id === 'closeRecipientModal') {
+            STATE.recipientModalVisible = false;
+            STATE.showTransferDetailsModal = false;
+            render();
+            return;
+          }
+          if (deleteId) { e.stopPropagation(); handleDeleteTransfer(deleteId); return; }
+          if (pseudoData) { STATE.recipientPseudo = pseudoData; STATE.recipientSuggestions = []; render(); return; }
+          if (selectedPseudo) { STATE.recipientPseudo = selectedPseudo; STATE.recipientModalVisible = false; render(); return; }
+          if (transferId) { handleShowTransferDetails(transferId); return; }
+          if (adminProfileId) { const found = STATE.allProfiles.find(p => p.id === adminProfileId); STATE.adminSelectedProfile = found || null; STATE.adminNewPseudo = found?.pseudo || ''; render(); return; }
+
+          switch (id) {
+            case 'auth-submit': handleAuthSubmit(); break;
+            case 'toggle-pass': STATE.showPassword = !STATE.showPassword; render(); break;
+            case 'toggle-mode': STATE.isLoginMode = !STATE.isLoginMode; setAuthError(''); setMessage(null); render(); break;
+            case 'signout': handleSignOut(); break;
+            case 'update-pseudo': handleUpdatePseudo(); break;
+            case 'openRecipientModal': STATE.recipientModalVisible = true; render(); break;
+            case 'do-transfer': STATE.pinModalVisible = true; STATE.pinError = ''; render(); break;
+            case 'pinSubmit': handlePinSubmit(); break;
+            case 'pinCancel': STATE.pinModalVisible = false; render(); break;
+            // Réinitialisation des champs pour le changement de PIN
+            case 'change-pin-button': STATE.changePinModalVisible = true; STATE.changePinError = ''; STATE.oldPinInput = ''; STATE.newPinInput = ''; STATE.confirmNewPinInput = ''; render(); break; 
+            case 'changePinSubmit': handleChangePinSubmit(); break;
+            case 'changePinCancel': STATE.changePinModalVisible = false; render(); break;
+            case 'admin-update-pseudo': handleAdminUpdatePseudo(); break;
+            case 'admin-update-balance': handleAdminUpdateBalance(); break;
+            case 'admin-delete-user': handleAdminDeleteUser(); break;
+          }
+        });
+
+        app.addEventListener('input', (e) => {
+          const { id, value } = e.target;
+          if (STATE.hasOwnProperty(id)) {
+            STATE[id] = value;
+          }
+          if (id === 'recipientPseudo') {
+            if (value.length > 0) {
+              STATE.recipientSuggestions = (STATE.allProfiles || []).filter(p => p.pseudo.toLowerCase().startsWith(value.toLowerCase()) && p.id !== STATE.user?.id); 
+            } else {
+              STATE.recipientSuggestions = [];
+            }
+          }
+          // Re-render uniquement pour les champs de recherche/filtre/pseudo
+          if (['recipientPseudo', 'adminSearchPseudo', 'recipientModalSearch', 'newPseudo', 'adminNewPseudo'].includes(id)) {
+            render();
+          }
+        });
+      }
+
+      async function handleAuthSubmit() {
+        setAuthError(''); setMessage(null); STATE.authLoading = true; render();
+        try {
+          if (STATE.isLoginMode) {
+            const { error } = await sb.auth.signInWithPassword({ email: STATE.email, password: STATE.password });
+            if (error) throw error;
+          } else {
+            if (!STATE.registerPseudo.trim()) throw new Error('Veuillez choisir un pseudo.');
+            const { data: existing } = await sb.from('profiles').select('id').eq('pseudo', STATE.registerPseudo.trim()).maybeSingle();
+            if (existing) throw new Error('Ce pseudo est déjà utilisé.');
+            const { error } = await sb.auth.signUp({ email: STATE.email, password: STATE.password, options: { data: { pseudo: STATE.registerPseudo.trim() } } });
+            if (error) throw error;
+            setMessage('Inscription réussie !');
+            // Réinitialiser l'état après l'inscription
+            STATE.isLoginMode = true; 
+            STATE.password = '';
+            STATE.registerPseudo = '';
+          }
+        } catch (e) { setAuthError(e.message || 'Erreur inconnue.');
+        } finally { STATE.authLoading = false; render(); }
+      }
+      const handleSignOut = () => sb.auth.signOut();
+      
+      async function loadProfile(userId) {
+        if (!userId) return;
+        try {
+          const { data, error } = await sb.from('profiles').select('*').eq('id', userId).single();
+          if (error && error.code !== 'PGRST116') throw error; 
+          if (data) { 
+              STATE.profile = data; 
+              STATE.newPseudo = data.pseudo || ''; 
+          } else if (!error || error.code === 'PGRST116'){
+              STATE.profile = null; 
+              STATE.newPseudo = ''; 
+          }
+        } catch (e) { 
+            setMessage(`Erreur chargement profil : ${e.message}`, true); 
+            STATE.profile = null; 
+            STATE.newPseudo = '';
+        }
+      }
+      async function loadTransfers(userId) {
+        if (!userId) return;
+        try {
+          const { data, error } = await sb.from('transfers').select('*, sender:sender_id(pseudo), recipient:recipient_id(pseudo)').or(`sender_id.eq.${userId},recipient_id.eq.${userId}`).order('created_at', { ascending: false });
+          if (error) throw error;
+          STATE.transfers = data || [];
+        } catch (e) { setMessage(`Erreur transferts : ${e.message}`, true); }
+      }
+      
+      async function loadAllProfiles() {
+          try {
+              if (STATE.isAdmin) {
+                  const { data, error } = await sb.from('profiles').select('id, pseudo, balance');
+                   if (error) throw error;
+                  STATE.allProfiles = data || [];
+              } else {
+                  const { data, error } = await sb.rpc('get_public_profiles');
+                   if (error) throw error;
+                  STATE.allProfiles = data || [];
+              }
+          } catch(error) {
+               setMessage('Erreur chargement utilisateurs.', true);
+               STATE.allProfiles = [];
+          }
+      }
+
+      async function handleUpdatePseudo() {
+        if (!STATE.user || !STATE.profile) return; 
+        const trimmedPseudo = STATE.newPseudo.trim();
+        if (!trimmedPseudo || trimmedPseudo === STATE.profile.pseudo) return;
+        STATE.isPseudoUpdating = true; render();
+        try {
+            const { error } = await sb.from('profiles').update({ pseudo: trimmedPseudo }).eq('id', STATE.user.id).select();
+            if (error) throw error;
+            setMessage('Pseudo mis à jour !');
+            await loadProfile(STATE.user.id);
+        } catch (error) {
+             setMessage(error.code === '23505' ? 'Erreur: Pseudo déjà pris.' : `Erreur: ${error.message}`, true);
+        } finally {
+            STATE.isPseudoUpdating = false;
+            render();
+        }
+      }
+      async function handlePinSubmit() {
+        STATE.isPinChecking = true; STATE.pinError = ''; render();
+        try {
+          const { data: profileData, error } = await sb.from('profiles').select('pin').eq('id', STATE.user.id).single();
+          if (error || !profileData) throw new Error("Profil introuvable pour la vérification du PIN.");
+          if (STATE.pinInput === profileData.pin) {
+            STATE.pinModalVisible = false; STATE.pinInput = ''; await doTransfer();
+          } else { STATE.pinError = 'PIN incorrect'; }
+        } catch (e) { STATE.pinError = 'Erreur : ' + e.message;
+        } finally { STATE.isPinChecking = false; render(); }
+      }
+      async function doTransfer() {
+        if (!STATE.description.trim()) return setMessage("La description est obligatoire.", true);
+        const parsedAmount = parseFloat(STATE.amount);
+        if (isNaN(parsedAmount) || parsedAmount <= 0) return setMessage('Montant invalide.', true);
+        if (!STATE.profile) return setMessage('Profil non chargé.', true); 
+        if (parsedAmount > (STATE.profile?.balance ?? 0)) return setMessage('Solde insuffisant.', true);
+        if (!STATE.recipientPseudo.trim() || (STATE.profile && STATE.recipientPseudo.trim() === STATE.profile?.pseudo)) return setMessage('Bénéficiaire invalide.', true);
+        
+        STATE.isTransferring = true; render();
+        try {
+            const { error } = await sb.rpc('create_transfer', { 
+                sender_id_in: STATE.user.id, 
+                recipient_pseudo_in: STATE.recipientPseudo.trim(), 
+                amount_in: parsedAmount, 
+                description_in: STATE.description.trim() 
+            });
+            if (error) throw error;
+            
+            setMessage('Virement effectué !');
+            STATE.amount = '100.00'; 
+            STATE.recipientPseudo = '';
+            STATE.description = '';
+            STATE.recipientSuggestions = [];
+            
+            await Promise.all([loadProfile(STATE.user.id), loadTransfers(STATE.user.id)]);
+        } catch (error) {
+             setMessage(`Erreur virement : ${error.message}`, true);
+        } finally {
+            STATE.isTransferring = false;
+            render();
+        }
+      }
+      
+      async function handleChangePinSubmit() {
+        STATE.isPinChanging = true; STATE.changePinError = ''; render();
+        try {
+          if (!STATE.user?.email) throw new Error("Email utilisateur non trouvé.");
+          
+          // 1. Vérification du mot de passe Supabase (sécurité)
+          const { error: authError } = await sb.auth.signInWithPassword({ email: STATE.user.email, password: STATE.oldPinInput });
+          if (authError) throw new Error('Le mot de passe actuel est incorrect.');
+          
+          // 2. Vérification du format et de la confirmation
+          if (!/^\d{4,6}$/.test(STATE.newPinInput)) throw new Error('Le nouveau PIN doit faire 4 à 6 chiffres.');
+          if (STATE.newPinInput !== STATE.confirmNewPinInput) throw new Error('Les nouveaux PINs ne correspondent pas.');
+          
+          // 3. Mise à jour du PIN
+          const { error: updateError } = await sb.from('profiles').update({ pin: STATE.newPinInput }).eq('id', STATE.user.id);
+          if (updateError) throw updateError;
+          
+          STATE.changePinModalVisible = false; 
+          STATE.oldPinInput = ''; STATE.newPinInput = ''; STATE.confirmNewPinInput = ''; // Vider les champs
+          setMessage('PIN mis à jour !');
+        } catch (e) { 
+            const errorMessage = e.message.includes('Invalid login credentials') ? 'Mot de passe actuel incorrect.' : e.message;
+            STATE.changePinError = errorMessage;
+        } finally { 
+            STATE.isPinChanging = false; 
+            render(); 
+        }
+      }
+      
+      function handleShowTransferDetails(transferId) {
+        const id = parseInt(transferId, 10);
+        const transfer = STATE.transfers.find(t => t.id === id);
+        if (transfer) { STATE.selectedTransfer = transfer; STATE.showTransferDetailsModal = true; render(); }
+      }
+      function handleCloseTransferDetails() { STATE.showTransferDetailsModal = false; STATE.selectedTransfer = null; render(); }
+      
+      async function handleDeleteTransfer(transferId) {
+        if (!confirm("Voulez-vous VRAIMENT supprimer ce virement ? (Le solde pourrait ne pas être rétabli si la logique serveur n'est pas en place.)")) return; 
+        
+        try {
+            const { error } = await sb.from('transfers').delete().eq('id', transferId);
+            if (error) throw error;
+            setMessage("Virement supprimé.");
+            await Promise.all([loadTransfers(STATE.user.id), loadProfile(STATE.user.id)]); 
+        } catch (error) {
+             setMessage(`Erreur: ${error.message}`, true);
+        } finally {
+            render();
+        }
+      }
+
+      async function handleAdminAction(functionName, body) {
+        if (!STATE.isAdmin) return setMessage("Action réservée à l'administrateur.", true);
+        STATE.isProcessingAdminAction = true; setAdminMessage(''); render();
+         try {
+            const { data, error } = await sb.functions.invoke(functionName, { body });
+            if (error) throw error;
+            setAdminMessage((data && data.data && data.data.message) || 'Action réussie.'); 
+            
+            await loadAllProfiles(); 
+            if (STATE.adminSelectedProfile && STATE.adminSelectedProfile.id === STATE.user?.id) {
+                 await loadProfile(STATE.user.id);
+            }
+            STATE.adminSelectedProfile = null; 
+            
+        } catch (error) {
+             setAdminMessage(`Erreur: ${error.error || error.message}`); 
+        } finally {
+            STATE.isProcessingAdminAction = false; 
+            render();
+        }
+      }
+      const handleAdminDeleteUser = () => {
+          if (STATE.adminSelectedProfile && confirm(`Supprimer l'utilisateur ${STATE.adminSelectedProfile.pseudo} ? Cette action est irréversible.`)) {
+             handleAdminAction('admin-delete-user', { userIdToDelete: STATE.adminSelectedProfile.id });
+          }
+      };
+      const handleAdminUpdatePseudo = () => {
+          if(STATE.adminSelectedProfile) {
+            handleAdminAction('admin-update-pseudo', { userIdToUpdate: STATE.adminSelectedProfile.id, newPseudo: STATE.adminNewPseudo });
+          }
+      };
+      const handleAdminUpdateBalance = () => {
+           if(STATE.adminSelectedProfile) {
+               handleAdminAction('admin-update-balance', { userIdToUpdate: STATE.adminSelectedProfile.id, amount: parseFloat(STATE.adminModifyBalance) || 0 });
+           }
+      };
+      
+      let channels = [];
+      function subscribeRealtime(userId) {
+        unsubscribeRealtime(); 
+        const profileChannel = sb.channel(`profile-${userId}`)
+          .on('postgres_changes', 
+            { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, 
+            async (payload) => { 
+                await loadProfile(userId); 
+                render(); 
+            })
+          .subscribe((status, err) => {
+              if (err) console.error(`Erreur abonnement profil ${userId}:`, err);
+          });
+          
+        const transferChannel = sb.channel(`transfers-${userId}`)
+            .on('postgres_changes', 
+                { event: '*', schema: 'public', table: 'transfers', filter: `or(sender_id.eq.${userId},recipient_id.eq.${userId})` }, 
+                async (payload) => { 
+                    await loadTransfers(userId); 
+                    await loadProfile(userId); 
+                    render(); 
+                 })
+            .subscribe((status, err) => {
+                 if (err) console.error(`Erreur abonnement transferts ${userId}:`, err);
+            });
+            
+        channels = [profileChannel, transferChannel];
+      }
+      async function unsubscribeRealtime() { 
+          await Promise.all(channels.map(c => sb.removeChannel(c)));
+          channels = []; 
+      }
+      
+      async function init() {
+        sb.auth.onAuthStateChange(async (_event, session) => {
+          STATE.session = session;
+          const currentUser = session?.user ?? null;
+          
+          const userChanged = STATE.user?.id !== currentUser?.id;
+          STATE.user = currentUser;
+          STATE.isAdmin = !!(currentUser?.email === STATE.ADMIN_EMAIL);
+
+          if (userChanged) {
+              await unsubscribeRealtime(); 
+          }
+
+          if (STATE.user) {
+            await Promise.all([
+                loadProfile(STATE.user.id), 
+                loadTransfers(STATE.user.id), 
+                loadAllProfiles() 
+            ]);
+            if (userChanged) {
+                 subscribeRealtime(STATE.user.id); 
+            }
+          } else { 
+            await unsubscribeRealtime(); 
+            Object.assign(STATE, { profile: null, transfers: [], allProfiles: [] });
+          }
+          
+          // Mettre fin au chargement APRÈS le chargement des données initiales
+          if (STATE.loading) {
+              STATE.loading = false;
+          }
+          render();
+        });
+        
+        // CORRECTION pour le chargement en boucle :
+        // Si onAuthStateChange ne se déclenche pas rapidement, forcer le rendu.
+        setTimeout(() => {
+             if (STATE.loading) {
+                 STATE.loading = false;
+                 render();
+             }
+        }, 100); 
+      }
+      
+      init();
+      bindEvents();
+    })();
+  </script>
+</body>
+</html>
