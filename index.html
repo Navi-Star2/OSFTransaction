@@ -3,13 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>OSF.Transaction </title>
+  <title>OSF.Transaction (Scanner)</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     .spinner { width: 18px; height: 18px; border: 3px solid #e5e7eb; border-top-color: #6366f1; border-radius: 50%; animation: spin 1s linear infinite; display:inline-block; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .suggestion-item:hover { background: #f3f4f6; }
+    /* Style pour le scanner */
+    #scanner-video { width: 100%; max-width: 400px; border-radius: 8px; }
   </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -18,10 +20,10 @@
   </div>
 
   <script>
+    // -- START: Application Logic --
     (() => {
         const appDiv = document.getElementById('app');
 
-        // Vérification de sécurité pour la bibliothèque principale
         if (typeof supabase === 'undefined') {
             const errorMessage = `
             <div class="mt-10 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative" role="alert">
@@ -29,6 +31,7 @@
                 <span class="block sm:inline">La bibliothèque Supabase n'a pas pu être chargée. Vérifiez votre connexion Internet.</span>
             </div>`;
             appDiv.innerHTML = errorMessage;
+            console.error("La bibliothèque Supabase n'a pas pu être chargée.");
             return;
         }
 
@@ -49,6 +52,20 @@
         ADMIN_EMAIL: 'o.s.f.team528@gmail.com', adminMessage: '', adminSearchPseudo: '',
         adminSelectedProfile: null, adminNewPseudo: '', adminModifyBalance: '0.00',
         isProcessingAdminAction: false, message: null, authError: '', isTransferring: false, isPseudoUpdating: false,
+        
+        isQuickPayMode: false,
+        quickPayStep: 1, 
+        quickPaySender: null, 
+        quickPayCode: '', 
+        quickPayRecipientPseudo: '',
+        quickPayAmount: '10.00',
+        quickPayDescription: '',
+        quickPayAuthLoading: false,
+        
+        // Scanner natif
+        scannerModalVisible: false,
+        scannerStream: null,
+        scannerMessage: '',
       };
 
       const formatSnoard = (value) => `${Number(value ?? 0).toFixed(2)} Snoard`;
@@ -67,7 +84,6 @@
         }
       }
       function setAuthError(msg) { STATE.authError = msg || ''; render(); }
-      function setAdminMessage(msg) { STATE.adminMessage = msg || ''; render(); } // Ajout pour la cohérence
 
       function render() {
         const activeElement = document.activeElement;
@@ -79,7 +95,21 @@
           app.innerHTML = `<div class="flex items-center justify-center min-h-[60vh]"><span class="spinner mr-3"></span> Chargement...</div>`;
           return;
         }
-        app.innerHTML = STATE.session ? renderDashboard() : renderAuth();
+        
+        // Concatène les modales à la vue principale
+        let mainView = '';
+        if (STATE.isQuickPayMode) {
+            mainView = renderQuickPayMode();
+        } else {
+            mainView = STATE.session ? renderDashboard() : renderAuth();
+        }
+        
+        // Ajoute la modale du scanner si elle est visible
+        if (STATE.scannerModalVisible) {
+            mainView += renderScannerModal();
+        }
+
+        app.innerHTML = mainView;
 
         if (activeElementId) {
           const newActiveElement = document.getElementById(activeElementId);
@@ -100,6 +130,12 @@
               <h2 class="text-xl font-semibold text-center mb-4">${STATE.isLoginMode ? 'Connexion' : 'Créer un compte'}</h2>
               ${STATE.authError ? `<p class="text-red-500 text-center mb-4">${STATE.authError}</p>` : ''}
               ${STATE.message ? `<p class="text-blue-600 text-center mb-4">${STATE.message.text}</p>` : ''}
+              
+              <button id="show-quick-pay" class="w-full mb-4 bg-blue-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 flex items-center justify-center">
+                Paiement Rapide par Code
+              </button>
+              <div class="my-4 text-center text-gray-500">ou</div>
+
               <input type="email" id="email" placeholder="E-mail" value="${STATE.email}" class="shadow-sm border rounded-lg w-full py-3 px-4 mb-3" />
               <div class="relative mb-4">
                 <input id="password" type="${STATE.showPassword ? 'text' : 'password'}" placeholder="Mot de passe" value="${STATE.password}" class="shadow-sm border rounded-lg w-full py-3 px-4" />
@@ -113,6 +149,67 @@
             </div>
           </div>
         `;
+      }
+      
+      function renderQuickPayMode() {
+        const suggestionsList = STATE.recipientSuggestions.map(s => `<li data-pseudo="${s.pseudo}" class="px-4 py-2 cursor-pointer suggestion-item">${s.pseudo}</li>`).join('');
+        const showScannerButton = ('BarcodeDetector' in window);
+
+        // Étape 1: Demander le code UID
+        if (STATE.quickPayStep === 1) {
+             return `
+             <div class="bg-white p-6 rounded-2xl shadow-xl mt-10">
+                <h1 class="text-3xl font-bold text-center mb-2">Paiement Rapide</h1>
+                ${STATE.authError ? `<p class="text-red-500 text-center mb-4">${STATE.authError}</p>` : ''}
+                <div class="p-4 border rounded-xl bg-gray-50 space-y-4">
+                  <div>
+                    <label for="quickPayCode" class="text-sm font-medium text-gray-700">Votre Code de Connexion (UID)</label>
+                    <input type="text" id="quickPayCode" placeholder="Entrez votre code" value="${STATE.quickPayCode}" class="mt-1 shadow-sm border rounded-lg w-full py-3 px-4" />
+                  </div>
+                  
+                  <div class="flex gap-2">
+                    ${showScannerButton ? `<button id="scan-quick-pay-code" class="w-1/2 bg-gray-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-gray-700">Scanner</button>` : ''}
+                    <button id="submit-quick-pay-uid" class="w-full ${!showScannerButton ? 'w-full' : 'w-1/2'} bg-blue-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 flex items-center justify-center">
+                       ${STATE.quickPayAuthLoading ? '<span class="spinner"></span>' : 'Continuer'}
+                    </button>
+                  </div>
+                  <button id="cancel-quick-pay" class="w-full mt-2 text-sm text-center text-gray-600">Annuler</button>
+                </div>
+            </div>`;
+        }
+
+        // Étape 2: Demander les détails du virement
+        if (STATE.quickPayStep === 2 && STATE.quickPaySender) {
+            return `
+             <div class="bg-white p-6 rounded-2xl shadow-xl mt-10">
+                <h1 class="text-3xl font-bold text-center mb-2">Paiement Rapide</h1>
+                <p class="text-center text-gray-600 mb-6">Connecté en tant que: <span class="font-bold text-indigo-600">${STATE.quickPaySender.pseudo}</span></p>
+                ${STATE.authError ? `<p class="text-red-500 text-center mb-4">${STATE.authError}</p>` : ''}
+                ${STATE.message ? `<p class="text-center mb-4 font-semibold ${STATE.message.isError ? 'text-red-600' : 'text-blue-600'}">${STATE.message.text}</p>` : ''}
+                
+                <div class="p-4 border rounded-xl bg-gray-50 space-y-4">
+                  <div class="relative">
+                    <label for="quickPayRecipientPseudo" class="text-sm font-medium text-gray-700">Pseudo du Destinataire</label>
+                    <input type="text" id="quickPayRecipientPseudo" placeholder="Pseudo du destinataire" value="${STATE.quickPayRecipientPseudo}" class="mt-1 shadow-sm border rounded-lg w-full py-3 px-4" />
+                    ${STATE.recipientSuggestions.length > 0 ? `<ul id="suggestions" class="absolute z-10 w-full bg-white border rounded-lg shadow-lg mt-1">${suggestionsList}</ul>` : ''}
+                  </div>
+                   <div>
+                    <label for="quickPayAmount" class="text-sm font-medium text-gray-700">Montant</label>
+                    <input id="quickPayAmount" type="number" placeholder="Montant" value="${STATE.quickPayAmount}" class="mt-1 w-full shadow-sm border rounded-lg p-3" />
+                  </div>
+                  <div>
+                    <label for="quickPayDescription" class="text-sm font-medium text-gray-700">Description</label>
+                    <textarea id="quickPayDescription" placeholder="Description (obligatoire)" class="mt-1 w-full shadow-sm border rounded-lg p-3">${STATE.quickPayDescription}</textarea>
+                  </div>
+
+                  <button id="submit-quick-pay-transfer" class="w-full bg-blue-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 flex items-center justify-center">
+                     ${STATE.quickPayAuthLoading ? '<span class="spinner"></span>' : 'Effectuer le virement'}
+                  </button>
+                   <button id="cancel-quick-pay" class="w-full mt-2 text-sm text-center text-gray-600">Annuler</button>
+                </div>
+            </div>
+            ${renderPinModal()}`;
+        }
       }
 
       function renderDashboard() {
@@ -139,7 +236,7 @@
         const filteredAdminProfiles = (STATE.allProfiles || []).filter(pf => pf.pseudo.toLowerCase().includes((STATE.adminSearchPseudo || '').toLowerCase()));
         const adminList = filteredAdminProfiles.map(pf => `<div data-id="${pf.id}" class="p-3 rounded-lg mb-2 cursor-pointer ${STATE.adminSelectedProfile?.id === pf.id ? 'bg-red-200' : 'bg-white hover:bg-gray-100'}"><p class="font-semibold">${pf.pseudo}</p><p class="text-sm text-gray-600">${isAdmin && pf.balance !== undefined ? formatSnoard(pf.balance) : ''}</p></div>`).join('');
         const recipientModalList = (STATE.allProfiles || [])
-          .filter(pf => pf.pseudo.toLowerCase().includes(STATE.recipientModalSearch.toLowerCase()) && pf.id !== STATE.user?.id) 
+          .filter(pf => pf.pseudo.toLowerCase().includes(STATE.recipientModalSearch.toLowerCase()) && pf.id !== (STATE.user ? STATE.user.id : null))
           .map(pf => `<li data-select-pseudo="${pf.pseudo}" class="p-3 rounded-lg cursor-pointer hover:bg-gray-100">${pf.pseudo}</li>`)
           .join('') || '<li class="text-center text-gray-500">Aucun utilisateur trouvé.</li>';
 
@@ -166,13 +263,153 @@
               </div>
             </div>
             <div class="bg-white p-6 rounded-2xl shadow-xl"><h2 class="text-2xl font-bold text-center mb-4">Historique</h2><ul id="transfer-history" class="space-y-4">${transfersList || '<li class="text-center text-gray-500">Aucun virement.</li>'}</ul></div>
-            <div id="pinModal" class="${STATE.pinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Entrez votre PIN</h2><input type="password" id="pinInput" value="${STATE.pinInput}" class="w-full p-2 border rounded mb-4" placeholder="PIN"><p id="pinError" class="text-red-500 mb-4 h-6">${STATE.pinError}</p><div class="flex justify-between"><button id="pinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="pinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChecking ? '<span class="spinner"></span>' : 'Valider'}</button></div></div></div>
-            <div id="changePinModal" class="${STATE.changePinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Modifier PIN</h2><input type="password" id="oldPinInput" value="${STATE.oldPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Mot de passe actuel (pour sécurité)"><input type="password" id="newPinInput" value="${STATE.newPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Nouveau PIN (4-6 chiffres)"><input type="password" id="confirmNewPinInput" value="${STATE.confirmNewPinInput}" class="w-full p-2 border rounded mb-4" placeholder="Confirmer nouveau PIN"><p id="changePinError" class="text-red-500 mb-4 h-6">${STATE.changePinError}</p><div class="flex justify-between"><button id="changePinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="changePinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChanging ? '<span class="spinner"></span>' : 'Confirmer'}</button></div></div></div>
+            <!-- Modals -->
+            ${renderPinModal()}
+            <div id="changePinModal" class="${STATE.changePinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Modifier PIN</h2><input type="password" id="oldPinInput" value="${STATE.oldPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Mot de passe actuel"><input type="password" id="newPinInput" value="${STATE.newPinInput}" class="w-full p-2 border rounded mb-2" placeholder="Nouveau PIN (4-6 chiffres)"><input type="password" id="confirmNewPinInput" value="${STATE.confirmNewPinInput}" class="w-full p-2 border rounded mb-4" placeholder="Confirmer nouveau PIN"><p id="changePinError" class="text-red-500 mb-4 h-6">${STATE.changePinError}</p><div class="flex justify-between"><button id="changePinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="changePinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChanging ? '<span class="spinner"></span>' : 'Confirmer'}</button></div></div></div>
             <div id="transferDetailsModal" class="${STATE.showTransferDetailsModal ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-96"><div class="flex justify-between items-center mb-4"><h2 class="text-lg font-bold">Détails du Virement</h2><button id="closeTransferDetails" class="text-gray-500 hover:text-gray-700 text-2xl font-bold">&times;</button></div>${STATE.selectedTransfer ? `<div class="space-y-3 text-sm"><p><strong>De:</strong> ${STATE.selectedTransfer.sender?.pseudo || 'Moi'}</p><p><strong>À:</strong> ${STATE.selectedTransfer.recipient?.pseudo || 'Moi'}</p><p><strong>Montant:</strong> ${formatSnoard(STATE.selectedTransfer.amount)}</p><p><strong>Date:</strong> ${new Date(STATE.selectedTransfer.created_at).toLocaleString('fr-FR')}</p><p><strong>Description:</strong></p><p class="bg-gray-100 p-2 rounded-lg text-gray-700 whitespace-pre-wrap">${STATE.selectedTransfer.description || 'Pas de description.'}</p></div>` : ''}</div></div>
             <div id="recipientModal" class="${STATE.recipientModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"><div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-md max-h-[80vh] flex flex-col"><div class="flex justify-between items-center mb-4"><h2 class="text-lg font-bold">Choisir un bénéficiaire</h2><button id="closeRecipientModal" class="text-gray-500 hover:text-gray-700 text-2xl font-bold">&times;</button></div><input type="text" id="recipientModalSearch" value="${STATE.recipientModalSearch}" class="w-full p-2 border rounded mb-4" placeholder="Rechercher un pseudo..."><ul id="recipient-list" class="overflow-y-auto space-y-2">${recipientModalList}</ul></div></div>
             ${isAdmin ? `<div class="bg-white p-6 rounded-2xl shadow-xl border-4 border-dashed border-red-500 mt-6"><h2 class="text-2xl font-bold text-center text-red-700 mb-4">Admin</h2>${STATE.adminMessage ? `<p class="text-center mb-4 font-semibold text-blue-600">${STATE.adminMessage}</p>` : ''}<input id="adminSearchPseudo" type="text" placeholder="Rechercher..." value="${STATE.adminSearchPseudo}" class="w-full shadow-sm border rounded-lg p-3 mb-4" /><div id="admin-list" class="bg-gray-50 rounded-xl p-4 max-h-60 overflow-y-auto shadow-inner mb-4">${adminList || '<p class="text-sm text-gray-500">Aucun profil.</p>'}</div>${STATE.adminSelectedProfile ? `<div class="mt-4 p-4 bg-red-50 rounded-lg border border-red-200 space-y-4"><h3 class="font-bold text-lg">Actions pour ${STATE.adminSelectedProfile.pseudo}</h3><div><label class="block text-sm">Modifier pseudo</label><div class="flex gap-2 mt-1"><input id="adminNewPseudo" type="text" value="${STATE.adminNewPseudo}" class="flex-grow shadow-sm border rounded-lg p-2" /><button id="admin-update-pseudo" class="bg-red-500 text-white font-bold p-2 rounded-lg">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'OK'}</button></div></div><div><label class="block text-sm">Ajuster solde (+/-)</label><div class="flex gap-2 mt-1"><input id="adminModifyBalance" type="number" value="${STATE.adminModifyBalance}" class="flex-grow shadow-sm border rounded-lg p-2" /><button id="admin-update-balance" class="bg-red-500 text-white font-bold p-2 rounded-lg">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'OK'}</button></div></div><button id="admin-delete-user" class="w-full bg-red-700 text-white font-bold py-2 px-4 rounded-lg hover:bg-red-800">${STATE.isProcessingAdminAction ? '<span class="spinner"></span>' : 'Supprimer'}</button></div>` : ''}</div>` : ''}
           </div>
         `;
+      }
+      
+      const renderPinModal = () => `<div id="pinModal" class="${STATE.pinModalVisible ? 'fixed' : 'hidden'} inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"><div class="bg-white p-6 rounded shadow-lg w-80"><h2 class="text-lg font-bold mb-4">Entrez votre PIN</h2><input type="password" id="pinInput" value="${STATE.pinInput}" class="w-full p-2 border rounded mb-4" placeholder="PIN"><p id="pinError" class="text-red-500 mb-4 h-6">${STATE.pinError}</p><div class="flex justify-between"><button id="pinCancel" class="bg-gray-400 px-4 py-2 rounded">Annuler</button><button id="pinSubmit" class="bg-indigo-600 text-white px-4 py-2 rounded flex-grow flex items-center justify-center">${STATE.isPinChecking ? '<span class="spinner"></span>' : 'Valider'}</button></div></div></div>`;
+
+      // --- NOUVELLE MODALE SCANNER ---
+      function renderScannerModal() {
+        return `
+            <div id="scanner-modal" class="fixed inset-0 bg-black bg-opacity-70 flex flex-col items-center justify-center z-50 p-4">
+                <div class="bg-white p-6 rounded-lg shadow-lg w-full max-w-md">
+                    <h2 class="text-xl font-bold text-center mb-4">Scanner le code UID</h2>
+                    <video id="scanner-video" playsinline></video>
+                    <p id="scanner-message" class="text-center text-red-500 h-6 my-2">${STATE.scannerMessage}</p>
+                    <button id="stop-scanner" class="w-full mt-4 bg-gray-300 text-gray-800 font-bold py-2 px-6 rounded-lg hover:bg-gray-400">Annuler</button>
+                </div>
+            </div>
+        `;
+      }
+      
+      // --- NOUVELLE LOGIQUE SCANNER ---
+      async function startScanner() {
+        if (!('BarcodeDetector' in window)) {
+            return setAuthError("Le scanner de code n'est pas supporté sur ce navigateur.");
+        }
+        
+        STATE.scannerModalVisible = true;
+        STATE.scannerMessage = '';
+        setAuthError('');
+        render(); // Affiche la modale et le <video>
+        
+        const videoElement = document.getElementById('scanner-video');
+        if (!videoElement) return; // Sécurité
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment' } 
+            });
+            STATE.scannerStream = stream;
+            videoElement.srcObject = stream;
+            await videoElement.play();
+
+            const barcodeDetector = new BarcodeDetector({ formats: ['qr_code', 'code_128', 'ean_13'] });
+
+            const scanLoop = async () => {
+                if (!STATE.scannerModalVisible) return; // Arrêter si la modale est fermée
+                try {
+                    const barcodes = await barcodeDetector.detect(videoElement);
+                    if (barcodes.length > 0) {
+                        const scannedCode = barcodes[0].rawValue.trim();
+                        // On suppose qu'un UID est un UUID v4 (36 chars)
+                        if (scannedCode.length === 36) {
+                            stopScanner();
+                            STATE.quickPayCode = scannedCode;
+                            await handleQuickPayUidSubmit(); // On utilise la même logique que la saisie manuelle
+                        } else {
+                            STATE.scannerMessage = 'Code non reconnu comme un UID.';
+                            render(); // Met à jour le message
+                            requestAnimationFrame(scanLoop); // Continue de scanner
+                        }
+                    } else {
+                        requestAnimationFrame(scanLoop); // Continue de scanner
+                    }
+                } catch (detectErr) {
+                    console.error('Erreur de détection:', detectErr);
+                    requestAnimationFrame(scanLoop); // Continue même en cas d'erreur
+                }
+            };
+            scanLoop();
+
+        } catch (err) {
+            console.error('Erreur caméra/scanner:', err);
+            STATE.scannerMessage = "Erreur caméra. Avez-vous donné la permission ?";
+            render();
+        }
+      }
+
+      function stopScanner() {
+        if (STATE.scannerStream) {
+            STATE.scannerStream.getTracks().forEach(track => track.stop());
+            STATE.scannerStream = null;
+        }
+        STATE.scannerModalVisible = false;
+        render(); // Cache la modale
+      }
+
+      async function handleQuickPayUidSubmit() {
+          if (!STATE.quickPayCode.trim()) return setAuthError("Veuillez entrer votre code de connexion (UID).");
+          
+          STATE.quickPayAuthLoading = true;
+          setAuthError('');
+          render();
+          
+          try {
+              const { data: senderProfile, error: senderError } = await sb.from('profiles').select('id, pseudo').eq('id', STATE.quickPayCode.trim()).single();
+              if (senderError || !senderProfile) throw new Error("Code de connexion (UID) invalide.");
+
+              STATE.quickPaySender = { id: senderProfile.id, pseudo: senderProfile.pseudo };
+              STATE.quickPayStep = 2;
+              await loadAllProfiles();
+          } catch (error) {
+              setAuthError(error.message);
+          } finally {
+              STATE.quickPayAuthLoading = false;
+              render();
+          }
+      }
+      
+      async function handleQuickPayTransferSubmit() {
+          setAuthError('');
+          if (!STATE.quickPayRecipientPseudo.trim()) return setAuthError("Veuillez entrer le pseudo du destinataire.");
+          if (!STATE.quickPayDescription.trim()) return setAuthError("La description est obligatoire.");
+          const parsedAmount = parseFloat(STATE.quickPayAmount);
+          if (isNaN(parsedAmount) || parsedAmount <= 0) return setAuthError('Montant invalide.');
+          
+          STATE.quickPayAuthLoading = true;
+          render();
+          try {
+              const { data: recipientProfile, error: recipientError } = await sb.from('profiles').select('id').eq('pseudo', STATE.quickPayRecipientPseudo.trim()).single();
+              if (recipientError || !recipientProfile) throw new Error("Pseudo destinataire invalide.");
+              if (STATE.quickPaySender.id === recipientProfile.id) throw new Error("Vous ne pouvez pas vous envoyer de l'argent à vous-même.");
+              
+              STATE.pinModalVisible = true;
+          } catch (error) {
+              setAuthError(error.message);
+          } finally {
+              STATE.quickPayAuthLoading = false;
+              render();
+          }
+      }
+
+      function cancelQuickPay() {
+          STATE.isQuickPayMode = false;
+          STATE.quickPayStep = 1;
+          STATE.quickPaySender = null;
+          STATE.quickPayCode = '';
+          STATE.quickPayRecipientPseudo = '';
+          STATE.quickPayAmount = '10.00';
+          STATE.quickPayDescription = '';
+          setAuthError('');
+          render();
       }
       
       function bindEvents() {
@@ -194,7 +431,18 @@
             return;
           }
           if (deleteId) { e.stopPropagation(); handleDeleteTransfer(deleteId); return; }
-          if (pseudoData) { STATE.recipientPseudo = pseudoData; STATE.recipientSuggestions = []; render(); return; }
+          
+          if (pseudoData) { 
+            if (STATE.isQuickPayMode) {
+                STATE.quickPayRecipientPseudo = pseudoData;
+            } else {
+                STATE.recipientPseudo = pseudoData;
+            }
+            STATE.recipientSuggestions = []; 
+            render(); 
+            return; 
+          }
+          
           if (selectedPseudo) { STATE.recipientPseudo = selectedPseudo; STATE.recipientModalVisible = false; render(); return; }
           if (transferId) { handleShowTransferDetails(transferId); return; }
           if (adminProfileId) { const found = STATE.allProfiles.find(p => p.id === adminProfileId); STATE.adminSelectedProfile = found || null; STATE.adminNewPseudo = found?.pseudo || ''; render(); return; }
@@ -208,14 +456,20 @@
             case 'openRecipientModal': STATE.recipientModalVisible = true; render(); break;
             case 'do-transfer': STATE.pinModalVisible = true; STATE.pinError = ''; render(); break;
             case 'pinSubmit': handlePinSubmit(); break;
-            case 'pinCancel': STATE.pinModalVisible = false; render(); break;
-            // Réinitialisation des champs pour le changement de PIN
-            case 'change-pin-button': STATE.changePinModalVisible = true; STATE.changePinError = ''; STATE.oldPinInput = ''; STATE.newPinInput = ''; STATE.confirmNewPinInput = ''; render(); break; 
+            case 'pinCancel': STATE.pinModalVisible = false; STATE.pinError = ''; render(); break; 
+            case 'change-pin-button': STATE.changePinModalVisible = true; STATE.changePinError = ''; render(); break;
             case 'changePinSubmit': handleChangePinSubmit(); break;
             case 'changePinCancel': STATE.changePinModalVisible = false; render(); break;
             case 'admin-update-pseudo': handleAdminUpdatePseudo(); break;
             case 'admin-update-balance': handleAdminUpdateBalance(); break;
             case 'admin-delete-user': handleAdminDeleteUser(); break;
+            
+            case 'show-quick-pay': STATE.isQuickPayMode = true; STATE.quickPayStep = 1; setAuthError(''); loadAllProfiles(); render(); break;
+            case 'submit-quick-pay-uid': handleQuickPayUidSubmit(); break;
+            case 'submit-quick-pay-transfer': handleQuickPayTransferSubmit(); break;
+            case 'cancel-quick-pay': cancelQuickPay(); break;
+            case 'scan-quick-pay-code': startScanner(); break;
+            case 'stop-scanner': stopScanner(); break;
           }
         });
 
@@ -224,15 +478,17 @@
           if (STATE.hasOwnProperty(id)) {
             STATE[id] = value;
           }
-          if (id === 'recipientPseudo') {
+          
+          if (id === 'recipientPseudo' || id === 'quickPayRecipientPseudo') {
+            const excludeId = STATE.isQuickPayMode ? STATE.quickPaySender?.id : (STATE.user ? STATE.user.id : null);
             if (value.length > 0) {
-              STATE.recipientSuggestions = (STATE.allProfiles || []).filter(p => p.pseudo.toLowerCase().startsWith(value.toLowerCase()) && p.id !== STATE.user?.id); 
+              STATE.recipientSuggestions = (STATE.allProfiles || []).filter(p => p.pseudo.toLowerCase().startsWith(value.toLowerCase()) && p.id !== excludeId);
             } else {
               STATE.recipientSuggestions = [];
             }
           }
-          // Re-render uniquement pour les champs de recherche/filtre/pseudo
-          if (['recipientPseudo', 'adminSearchPseudo', 'recipientModalSearch', 'newPseudo', 'adminNewPseudo'].includes(id)) {
+
+          if (['recipientPseudo', 'adminSearchPseudo', 'recipientModalSearch', 'quickPayCode', 'quickPayRecipientPseudo', 'quickPayAmount', 'quickPayDescription'].includes(id)) {
             render();
           }
         });
@@ -251,15 +507,15 @@
             const { error } = await sb.auth.signUp({ email: STATE.email, password: STATE.password, options: { data: { pseudo: STATE.registerPseudo.trim() } } });
             if (error) throw error;
             setMessage('Inscription réussie !');
-            // Réinitialiser l'état après l'inscription
-            STATE.isLoginMode = true; 
-            STATE.password = '';
-            STATE.registerPseudo = '';
           }
         } catch (e) { setAuthError(e.message || 'Erreur inconnue.');
         } finally { STATE.authLoading = false; render(); }
       }
-      const handleSignOut = () => sb.auth.signOut();
+      
+      const handleSignOut = () => {
+          STATE.isQuickPayMode = false; 
+          sb.auth.signOut();
+      };
       
       async function loadProfile(userId) {
         if (!userId) return;
@@ -268,14 +524,15 @@
           if (error && error.code !== 'PGRST116') throw error; 
           if (data) { 
               STATE.profile = data; 
-              STATE.newPseudo = data.pseudo || ''; 
+              STATE.newPseudo = data.pseudo || '';
           } else if (!error || error.code === 'PGRST116'){
-              STATE.profile = null; 
-              STATE.newPseudo = ''; 
+              console.warn("Profil non trouvé pour l'utilisateur:", userId);
+              STATE.profile = null;
+              STATE.newPseudo = '';
           }
         } catch (e) { 
             setMessage(`Erreur chargement profil : ${e.message}`, true); 
-            STATE.profile = null; 
+            STATE.profile = null;
             STATE.newPseudo = '';
         }
       }
@@ -290,28 +547,32 @@
       
       async function loadAllProfiles() {
           try {
-              if (STATE.isAdmin) {
-                  const { data, error } = await sb.from('profiles').select('id, pseudo, balance');
-                   if (error) throw error;
-                  STATE.allProfiles = data || [];
-              } else {
-                  const { data, error } = await sb.rpc('get_public_profiles');
-                   if (error) throw error;
-                  STATE.allProfiles = data || [];
+              const { data, error } = await sb.rpc('get_public_profiles');
+              if (error) throw error;
+              STATE.allProfiles = data || [];
+
+              if (STATE.isAdmin && !STATE.isQuickPayMode) {
+                  const { data: adminData, error: adminError } = await sb.from('profiles').select('id, pseudo, balance');
+                  if (adminError) throw adminError;
+                  const profileMap = new Map(STATE.allProfiles.map(p => [p.id, p]));
+                  adminData.forEach(adminProfile => {
+                      profileMap.set(adminProfile.id, { ...profileMap.get(adminProfile.id), ...adminProfile });
+                  });
+                  STATE.allProfiles = Array.from(profileMap.values());
               }
           } catch(error) {
-               setMessage('Erreur chargement utilisateurs.', true);
+               console.error('Erreur chargement utilisateurs:', error.message);
+               if (STATE.session) setMessage('Erreur chargement utilisateurs.', true);
                STATE.allProfiles = [];
           }
       }
 
       async function handleUpdatePseudo() {
-        if (!STATE.user || !STATE.profile) return; 
-        const trimmedPseudo = STATE.newPseudo.trim();
-        if (!trimmedPseudo || trimmedPseudo === STATE.profile.pseudo) return;
+        if (!STATE.user || !STATE.profile) return;
+        if (!STATE.newPseudo.trim() || STATE.newPseudo.trim() === STATE.profile.pseudo) return;
         STATE.isPseudoUpdating = true; render();
         try {
-            const { error } = await sb.from('profiles').update({ pseudo: trimmedPseudo }).eq('id', STATE.user.id).select();
+            const { error } = await sb.from('profiles').update({ pseudo: STATE.newPseudo.trim() }).eq('id', STATE.user.id);
             if (error) throw error;
             setMessage('Pseudo mis à jour !');
             await loadProfile(STATE.user.id);
@@ -322,42 +583,61 @@
             render();
         }
       }
+      
       async function handlePinSubmit() {
-        STATE.isPinChecking = true; STATE.pinError = ''; render();
+        STATE.isPinChecking = true; 
+        STATE.pinError = ''; 
+        render();
         try {
-          const { data: profileData, error } = await sb.from('profiles').select('pin').eq('id', STATE.user.id).single();
-          if (error || !profileData) throw new Error("Profil introuvable pour la vérification du PIN.");
-          if (STATE.pinInput === profileData.pin) {
-            STATE.pinModalVisible = false; STATE.pinInput = ''; await doTransfer();
-          } else { STATE.pinError = 'PIN incorrect'; }
-        } catch (e) { STATE.pinError = 'Erreur : ' + e.message;
-        } finally { STATE.isPinChecking = false; render(); }
+            if (STATE.isQuickPayMode) {
+                await doSimpleTransfer();
+            } else {
+                if (!STATE.user || !STATE.profile) throw new Error("Erreur interne: session utilisateur invalide.");
+                const { data: profileData, error } = await sb.from('profiles').select('pin').eq('id', STATE.user.id).single();
+                if (error || !profileData) throw new Error("Profil introuvable pour la vérification du PIN.");
+                
+                if (STATE.pinInput === profileData.pin) {
+                    STATE.pinModalVisible = false; 
+                    await doTransfer();
+                } else { 
+                    STATE.pinError = 'PIN incorrect'; 
+                }
+            }
+        } catch (e) { 
+            STATE.pinError = e.message;
+        } finally { 
+            STATE.isPinChecking = false; 
+            STATE.pinInput = '';
+            render(); 
+        }
       }
+
       async function doTransfer() {
+        if (!STATE.user) return setMessage('Erreur: Vous devez être connecté.', true);
         if (!STATE.description.trim()) return setMessage("La description est obligatoire.", true);
         const parsedAmount = parseFloat(STATE.amount);
         if (isNaN(parsedAmount) || parsedAmount <= 0) return setMessage('Montant invalide.', true);
-        if (!STATE.profile) return setMessage('Profil non chargé.', true); 
-        if (parsedAmount > (STATE.profile?.balance ?? 0)) return setMessage('Solde insuffisant.', true);
-        if (!STATE.recipientPseudo.trim() || (STATE.profile && STATE.recipientPseudo.trim() === STATE.profile?.pseudo)) return setMessage('Bénéficiaire invalide.', true);
+        if (STATE.profile && parsedAmount > (STATE.profile?.balance ?? 0)) return setMessage('Solde insuffisant.', true);
+        
+        const finalRecipientPseudo = STATE.recipientPseudo.trim();
+        if (!finalRecipientPseudo || (STATE.profile && finalRecipientPseudo === STATE.profile?.pseudo)) return setMessage('Bénéficiaire invalide.', true);
         
         STATE.isTransferring = true; render();
         try {
             const { error } = await sb.rpc('create_transfer', { 
                 sender_id_in: STATE.user.id, 
-                recipient_pseudo_in: STATE.recipientPseudo.trim(), 
+                recipient_pseudo_in: finalRecipientPseudo, 
                 amount_in: parsedAmount, 
                 description_in: STATE.description.trim() 
             });
             if (error) throw error;
             
             setMessage('Virement effectué !');
-            STATE.amount = '100.00'; 
+            STATE.amount = '100.00';
             STATE.recipientPseudo = '';
             STATE.description = '';
-            STATE.recipientSuggestions = [];
-            
             await Promise.all([loadProfile(STATE.user.id), loadTransfers(STATE.user.id)]);
+            
         } catch (error) {
              setMessage(`Erreur virement : ${error.message}`, true);
         } finally {
@@ -366,35 +646,49 @@
         }
       }
       
+      async function doSimpleTransfer() {
+          const { quickPayCode, quickPayRecipientPseudo, quickPayAmount, quickPayDescription, pinInput } = STATE;
+          
+          if (!quickPayDescription.trim()) throw new Error("La description est obligatoire.");
+          const parsedAmount = parseFloat(quickPayAmount);
+          if (isNaN(parsedAmount) || parsedAmount <= 0) throw new Error('Montant invalide.');
+          
+          const { error } = await sb.rpc('simple_transfer_with_pin', { 
+              sender_uid_in: quickPayCode.trim(), 
+              recipient_pseudo_in: quickPayRecipientPseudo.trim(), 
+              amount_in: parsedAmount, 
+              description_in: quickPayDescription,
+              pin_in: pinInput
+          });
+          
+          if (error) {
+              throw new Error(error.message);
+          }
+          
+          STATE.pinModalVisible = false;
+          setMessage('Virement effectué !');
+          
+          setTimeout(() => {
+              cancelQuickPay();
+          }, 2000);
+      }
+
       async function handleChangePinSubmit() {
         STATE.isPinChanging = true; STATE.changePinError = ''; render();
         try {
           if (!STATE.user?.email) throw new Error("Email utilisateur non trouvé.");
-          
-          // 1. Vérification du mot de passe Supabase (sécurité)
           const { error: authError } = await sb.auth.signInWithPassword({ email: STATE.user.email, password: STATE.oldPinInput });
           if (authError) throw new Error('Le mot de passe actuel est incorrect.');
-          
-          // 2. Vérification du format et de la confirmation
-          if (!/^\d{4,6}$/.test(STATE.newPinInput)) throw new Error('Le nouveau PIN doit faire 4 à 6 chiffres.');
+          if (!/^\d{4,6}$/.test(STATE.newPinInput)) throw new Error('Le PIN doit faire 4-6 chiffres.');
           if (STATE.newPinInput !== STATE.confirmNewPinInput) throw new Error('Les nouveaux PINs ne correspondent pas.');
-          
-          // 3. Mise à jour du PIN
           const { error: updateError } = await sb.from('profiles').update({ pin: STATE.newPinInput }).eq('id', STATE.user.id);
           if (updateError) throw updateError;
-          
           STATE.changePinModalVisible = false; 
-          STATE.oldPinInput = ''; STATE.newPinInput = ''; STATE.confirmNewPinInput = ''; // Vider les champs
+          STATE.oldPinInput = ''; STATE.newPinInput = ''; STATE.confirmNewPinInput = '';
           setMessage('PIN mis à jour !');
-        } catch (e) { 
-            const errorMessage = e.message.includes('Invalid login credentials') ? 'Mot de passe actuel incorrect.' : e.message;
-            STATE.changePinError = errorMessage;
-        } finally { 
-            STATE.isPinChanging = false; 
-            render(); 
-        }
+        } catch (e) { STATE.changePinError = e.message;
+        } finally { STATE.isPinChanging = false; render(); }
       }
-      
       function handleShowTransferDetails(transferId) {
         const id = parseInt(transferId, 10);
         const transfer = STATE.transfers.find(t => t.id === id);
@@ -402,19 +696,23 @@
       }
       function handleCloseTransferDetails() { STATE.showTransferDetailsModal = false; STATE.selectedTransfer = null; render(); }
       
-      async function handleDeleteTransfer(transferId) {
-        if (!confirm("Voulez-vous VRAIMENT supprimer ce virement ? (Le solde pourrait ne pas être rétabli si la logique serveur n'est pas en place.)")) return; 
-        
-        try {
-            const { error } = await sb.from('transfers').delete().eq('id', transferId);
-            if (error) throw error;
-            setMessage("Virement supprimé.");
-            await Promise.all([loadTransfers(STATE.user.id), loadProfile(STATE.user.id)]); 
-        } catch (error) {
-             setMessage(`Erreur: ${error.message}`, true);
-        } finally {
-            render();
+      function showConfirmationModal(message, onConfirm) {
+        if (confirm(message)) {
+            onConfirm();
         }
+      }
+
+      async function handleDeleteTransfer(transferId) {
+         showConfirmationModal("Supprimer ce virement ?", async () => {
+             try {
+                 const { error } = await sb.from('transfers').delete().eq('id', transferId);
+                 if (error) throw error;
+                 setMessage("Virement supprimé.");
+                 await loadTransfers(STATE.user.id);
+             } catch (error) {
+                  setMessage(`Erreur: ${error.message}`, true);
+             }
+         });
       }
 
       async function handleAdminAction(functionName, body) {
@@ -423,24 +721,21 @@
          try {
             const { data, error } = await sb.functions.invoke(functionName, { body });
             if (error) throw error;
-            setAdminMessage((data && data.data && data.data.message) || 'Action réussie.'); 
-            
+            setAdminMessage((data && data.message) || 'Action réussie.'); 
             await loadAllProfiles(); 
-            if (STATE.adminSelectedProfile && STATE.adminSelectedProfile.id === STATE.user?.id) {
-                 await loadProfile(STATE.user.id);
-            }
-            STATE.adminSelectedProfile = null; 
-            
+            STATE.adminSelectedProfile = null;
         } catch (error) {
-             setAdminMessage(`Erreur: ${error.error || error.message}`); 
+             setAdminMessage(`Erreur: ${error.message}`);
         } finally {
             STATE.isProcessingAdminAction = false; 
             render();
         }
       }
       const handleAdminDeleteUser = () => {
-          if (STATE.adminSelectedProfile && confirm(`Supprimer l'utilisateur ${STATE.adminSelectedProfile.pseudo} ? Cette action est irréversible.`)) {
-             handleAdminAction('admin-delete-user', { userIdToDelete: STATE.adminSelectedProfile.id });
+          if (STATE.adminSelectedProfile) {
+              showConfirmationModal(`Supprimer l'utilisateur ${STATE.adminSelectedProfile.pseudo} ? Cette action est irréversible.`, () => {
+                 handleAdminAction('admin-delete-user', { userIdToDelete: STATE.adminSelectedProfile.id });
+              });
           }
       };
       const handleAdminUpdatePseudo = () => {
@@ -456,11 +751,12 @@
       
       let channels = [];
       function subscribeRealtime(userId) {
-        unsubscribeRealtime(); 
+        unsubscribeRealtime();
         const profileChannel = sb.channel(`profile-${userId}`)
           .on('postgres_changes', 
             { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${userId}` }, 
             async (payload) => { 
+                console.log('Profile change received:', payload);
                 await loadProfile(userId); 
                 render(); 
             })
@@ -472,6 +768,7 @@
             .on('postgres_changes', 
                 { event: '*', schema: 'public', table: 'transfers', filter: `or(sender_id.eq.${userId},recipient_id.eq.${userId})` }, 
                 async (payload) => { 
+                    console.log('Transfer change received:', payload);
                     await loadTransfers(userId); 
                     await loadProfile(userId); 
                     render(); 
@@ -489,46 +786,41 @@
       
       async function init() {
         sb.auth.onAuthStateChange(async (_event, session) => {
+          const previousSession = STATE.session;
           STATE.session = session;
           const currentUser = session?.user ?? null;
-          
           const userChanged = STATE.user?.id !== currentUser?.id;
+          
           STATE.user = currentUser;
           STATE.isAdmin = !!(currentUser?.email === STATE.ADMIN_EMAIL);
+          
+          if (!STATE.isQuickPayMode) {
+            STATE.loading = true;
+            render();
+          }
 
-          if (userChanged) {
-              await unsubscribeRealtime(); 
+          if (userChanged && previousSession) {
+              await unsubscribeRealtime();
+              Object.assign(STATE, { profile: null, transfers: [], allProfiles: [] });
           }
 
           if (STATE.user) {
             await Promise.all([
                 loadProfile(STATE.user.id), 
                 loadTransfers(STATE.user.id), 
-                loadAllProfiles() 
+                loadAllProfiles()
             ]);
-            if (userChanged) {
-                 subscribeRealtime(STATE.user.id); 
+            if (userChanged || !previousSession) {
+                 subscribeRealtime(STATE.user.id);
             }
           } else { 
             await unsubscribeRealtime(); 
             Object.assign(STATE, { profile: null, transfers: [], allProfiles: [] });
           }
           
-          // Mettre fin au chargement APRÈS le chargement des données initiales
-          if (STATE.loading) {
-              STATE.loading = false;
-          }
+          STATE.loading = false;
           render();
         });
-        
-        // CORRECTION pour le chargement en boucle :
-        // Si onAuthStateChange ne se déclenche pas rapidement, forcer le rendu.
-        setTimeout(() => {
-             if (STATE.loading) {
-                 STATE.loading = false;
-                 render();
-             }
-        }, 100); 
       }
       
       init();
@@ -537,3 +829,4 @@
   </script>
 </body>
 </html>
+
